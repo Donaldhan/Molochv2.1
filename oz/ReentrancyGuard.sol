@@ -1,5 +1,7 @@
 pragma solidity 0.5.3;
-
+/**
+* 可重入锁
+*/
 contract ReentrancyGuard {
     // Booleans are more expensive than uint256 or any type that takes up a full
     // word because each write operation emits an extra SLOAD to first read the

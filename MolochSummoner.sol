@@ -17,7 +17,9 @@ contract MolochSummoner is CloneFactory {
     
     event SummonComplete(address indexed moloch, address[] summoner, address[] tokens, uint256 summoningTime, uint256 periodDuration, uint256 votingPeriodLength, uint256 gracePeriodLength, uint256 proposalDeposit, uint256 dilutionBound, uint256 processingReward, uint256[] summonerShares);
     event Register(uint daoIdx, address moloch, string title, string http, uint version);
-     
+    /**
+    * 基于eip-1167创建一个Moloch
+    */
     function summonMoloch(
         address[] memory _summoner,
         address[] memory _approvedTokens,

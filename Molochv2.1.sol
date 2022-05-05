@@ -11,41 +11,70 @@ contract Moloch is ReentrancyGuard {
     /***************
     GLOBAL CONSTANTS
     ***************/
-    uint256 public periodDuration; // default = 17280 = 4.8 hours in seconds (5 periods per day)
-    uint256 public votingPeriodLength; // default = 35 periods (7 days)
-    uint256 public gracePeriodLength; // default = 35 periods (7 days)
-    uint256 public proposalDeposit; // default = 10 ETH (~$1,000 worth of ETH at contract deployment)
-    uint256 public dilutionBound; // default = 3 - maximum multiplier a YES voter will be obligated to pay in case of mass ragequit
-    uint256 public processingReward; // default = 0.1 - amount of ETH to give to whoever processes a proposal
-    uint256 public summoningTime; // needed to determine the current period
-    bool private initialized; // internally tracks deployment under eip-1167 proxy pattern
-
-    address public depositToken; // deposit token contract reference; default = wETH
+    // default = 17280 = 4.8 hours in seconds (5 periods per day)
+    // 默认持续间隔，默认每天5个
+    uint256 public periodDuration;
+    // default = 35 periods (7 days) 默认投票间隔， 7天
+    uint256 public votingPeriodLength;
+    // default = 35 periods (7 days) 默认投票延长间隔， 7天
+    uint256 public gracePeriodLength;
+    // default = 10 ETH (~$1,000 worth of ETH at contract deployment)
+    // 提议需要质押的ETH？？
+    uint256 public proposalDeposit;
+    // default = 3 - maximum multiplier a YES voter will be obligated to pay in case of mass ragequit
+    uint256 public dilutionBound;
+    // default = 0.1 - amount of ETH to give to whoever processes a proposal
+    uint256 public processingReward;
+    // needed to determine the current period
+    uint256 public summoningTime;
+    // internally tracks deployment under eip-1167 proxy pattern
+    bool private initialized;
+    // deposit token contract reference; default = wETH
+    // 质押token合约引用
+    address public depositToken;
 
     // HARD-CODED LIMITS
     // These numbers are quite arbitrary; they are small enough to avoid overflows when doing calculations
     // with periods or shares, yet big enough to not limit reasonable use cases.
-    uint256 constant MAX_VOTING_PERIOD_LENGTH = 10**18; // maximum length of voting period
-    uint256 constant MAX_GRACE_PERIOD_LENGTH = 10**18; // maximum length of grace period
-    uint256 constant MAX_DILUTION_BOUND = 10**18; // maximum dilution bound
-    uint256 constant MAX_NUMBER_OF_SHARES_AND_LOOT = 10**18; // maximum number of shares that can be minted
-    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 400; // maximum number of whitelisted tokens
-    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 200; // maximum number of tokens with non-zero balance in guildbank
+    // maximum length of voting period 最大投票间隔
+    uint256 constant MAX_VOTING_PERIOD_LENGTH = 10**18;
+    // maximum length of grace period 最大增长间隔
+    uint256 constant MAX_GRACE_PERIOD_LENGTH = 10**18;
+    // maximum dilution bound
+    uint256 constant MAX_DILUTION_BOUND = 10**18;
+    // maximum number of shares that can be minted 最大可以挖取的份额
+    uint256 constant MAX_NUMBER_OF_SHARES_AND_LOOT = 10**18;
+    // maximum number of whitelisted tokens 最大token白名单数量
+    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 400;
+    // maximum number of tokens with non-zero balance in guildbank
+    //协会央行非零tokens的数量
+    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 200;
 
     // ***************
     // EVENTS
     // ***************
+    //
     event SummonComplete(address indexed summoner, address[] tokens, uint256 summoningTime, uint256 periodDuration, uint256 votingPeriodLength, uint256 gracePeriodLength, uint256 proposalDeposit, uint256 dilutionBound, uint256 processingReward);
+    //提交提议
     event SubmitProposal(address indexed applicant, uint256 sharesRequested, uint256 lootRequested, uint256 tributeOffered, address tributeToken, uint256 paymentRequested, address paymentToken, string details, bool[6] flags, uint256 proposalId, address indexed delegateKey, address indexed memberAddress);
+    //
     event SponsorProposal(address indexed delegateKey, address indexed memberAddress, uint256 proposalId, uint256 proposalIndex, uint256 startingPeriod);
+    //提交投票
     event SubmitVote(uint256 proposalId, uint256 indexed proposalIndex, address indexed delegateKey, address indexed memberAddress, uint8 uintVote);
+    //处理提议
     event ProcessProposal(uint256 indexed proposalIndex, uint256 indexed proposalId, bool didPass);
+    //处理白名单提议
     event ProcessWhitelistProposal(uint256 indexed proposalIndex, uint256 indexed proposalId, bool didPass);
+    //处理协议踢出协议
     event ProcessGuildKickProposal(uint256 indexed proposalIndex, uint256 indexed proposalId, bool didPass);
+    //怒退事件
     event Ragequit(address indexed memberAddress, uint256 sharesToBurn, uint256 lootToBurn);
     event TokensCollected(address indexed token, uint256 amountToCollect);
+    //取消体系
     event CancelProposal(uint256 indexed proposalId, address applicantAddress);
+    //更新成员代理key
     event UpdateDelegateKey(address indexed memberAddress, address newDelegateKey);
+    //退款事件
     event Withdraw(address indexed memberAddress, address token, uint256 amount);
 
     // *******************
@@ -60,8 +89,9 @@ contract Moloch is ReentrancyGuard {
     address public constant GUILD = address(0xdead);
     address public constant ESCROW = address(0xbeef);
     address public constant TOTAL = address(0xbabe);
+    //用户token余额
     mapping (address => mapping(address => uint256)) public userTokenBalances; // userTokenBalances[userAddress][tokenAddress]
-
+    //投票状态
     enum Vote {
         Null, // default value, counted as abstention
         Yes,
@@ -69,61 +99,105 @@ contract Moloch is ReentrancyGuard {
     }
 
     struct Member {
-        address delegateKey; // the key responsible for submitting proposals and voting - defaults to member address unless updated
-        uint256 shares; // the # of voting shares assigned to this member
-        uint256 loot; // the loot amount available to this member (combined with shares on ragequit)
-        bool exists; // always true once a member has been created
-        uint256 highestIndexYesVote; // highest proposal index # on which the member voted YES
-        uint256 jailed; // set to proposalIndex of a passing guild kick proposal for this member, prevents voting on and sponsoring proposals
+        // the key responsible for submitting proposals and voting - defaults to member address unless updated
+        // 提交提议或投票的key，默认为成员的地址
+        address delegateKey;
+        // the # of voting shares assigned to this member 成员投票份额或权重
+        uint256 shares;
+        // the loot amount available to this member (combined with shares on ragequit)
+        // 怒退份额？？？
+        uint256 loot;
+        // always true once a member has been created
+        // 成员是否创建
+        bool exists;
+        // highest proposal index # on which the member voted YES 最高的yes提议的索引
+        uint256 highestIndexYesVote;
+        // set to proposalIndex of a passing guild kick proposal for this member, prevents voting on and sponsoring proposals
+        // 协会踢出成员的协议索引， 阻止投票和发起提议
+        uint256 jailed;
     }
 
     struct Proposal {
-        address applicant; // the applicant who wishes to become a member - this key will be used for withdrawals (doubles as guild kick target for gkick proposals)
-        address proposer; // the account that submitted the proposal (can be non-member)
-        address sponsor; // the member that sponsored the proposal (moving it into the queue)
-        uint256 sharesRequested; // the # of shares the applicant is requesting
-        uint256 lootRequested; // the amount of loot the applicant is requesting
-        uint256 tributeOffered; // amount of tokens offered as tribute
-        address tributeToken; // tribute token contract reference
-        uint256 paymentRequested; // amount of tokens requested as payment
-        address paymentToken; // payment token contract reference
-        uint256 startingPeriod; // the period in which voting can start for this proposal
-        uint256 yesVotes; // the total number of YES votes for this proposal
-        uint256 noVotes; // the total number of NO votes for this proposal
-        bool[6] flags; // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
-        string details; // proposal details - could be IPFS hash, plaintext, or JSON
-        uint256 maxTotalSharesAndLootAtYesVote; // the maximum # of total shares encountered at a yes vote on this proposal
-        mapping(address => Vote) votesByMember; // the votes on this proposal by each member
+        // the applicant who wishes to become a member - this key will be used for withdrawals (doubles as guild kick target for gkick proposals)
+        // 希望成为成员的应用， 此key可以用户退款（踢出提议的目标）
+        address applicant;
+        // the account that submitted the proposal (can be non-member)
+        // 提交提议的账户
+        address proposer;
+        // the member that sponsored the proposal (moving it into the queue)
+        // 赞助提议的成员
+        address sponsor;
+        // the # of shares the applicant is requesting
+        // 应用请求的份额
+        uint256 sharesRequested;
+        // the amount of loot the applicant is requesting
+        // 应用请求的loot数量
+        uint256 lootRequested;
+        // amount of tokens offered as tribute
+        // 奖励的token数量
+        uint256 tributeOffered;
+        // tribute token contract reference
+        // 奖励token地址
+        address tributeToken;
+        // amount of tokens requested as payment
+        // 请求需要支付的token数量
+        uint256 paymentRequested;
+        // payment token contract reference
+        // 支付的token地址
+        address paymentToken;
+        // the period in which voting can start for this proposal
+        // 开始投票的时间
+        uint256 startingPeriod;
+        // the total number of YES votes for this proposal
+        // 总共投yes的票数
+        uint256 yesVotes;
+        // the total number of NO votes for this proposal
+        // 总共投NO的票数
+        uint256 noVotes;
+        // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
+        // 模式，阶段？？？
+        bool[6] flags;
+        // proposal details - could be IPFS hash, plaintext, or JSON
+        //提议详情
+        string details;
+        // the maximum # of total shares encountered at a yes vote on this proposal
+        // 投yes的最大份额和loot
+        uint256 maxTotalSharesAndLootAtYesVote;
+        // the votes on this proposal by each member
+        // 每个成员的投票
+        mapping(address => Vote) votesByMember;
     }
-
+    // token白名单
     mapping(address => bool) public tokenWhitelist;
-    address[] public approvedTokens;
+    address[] public approvedTokens;//授权的token
 
-    mapping(address => bool) public proposedToWhitelist;
-    mapping(address => bool) public proposedToKick;
+    mapping(address => bool) public proposedToWhitelist;//提议成员白名单？？
+    mapping(address => bool) public proposedToKick;//踢出提议地址
 
-    mapping(address => Member) public members;
-    mapping(address => address) public memberAddressByDelegateKey;
+    mapping(address => Member) public members;//成员
+    mapping(address => address) public memberAddressByDelegateKey;//成员代理key
 
-    mapping(uint256 => Proposal) public proposals;
+    mapping(uint256 => Proposal) public proposals;//提议
 
-    uint256[] public proposalQueue;
+    uint256[] public proposalQueue; //提议队列
 
+    //成员check
     modifier onlyMember {
         require(members[msg.sender].shares > 0 || members[msg.sender].loot > 0, "not a member");
         _;
     }
-
+    //股票份额持有检查
     modifier onlyShareholder {
         require(members[msg.sender].shares > 0, "not a shareholder");
         _;
     }
-
+    //成员代理检查
     modifier onlyDelegate {
         require(members[memberAddressByDelegateKey[msg.sender]].shares > 0, "not a delegate");
         _;
     }
-
+    /**
+    */
     function init(
         address[] calldata _summoner,
         address[] calldata _approvedTokens,
