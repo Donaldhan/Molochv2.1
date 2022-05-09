@@ -114,7 +114,7 @@ contract Moloch is ReentrancyGuard {
     uint256 public totalShares = 0; // total shares across all members 成员总投票份额
     uint256 public totalLoot = 0; // total loot across all members 成员总股份份额
 
-    uint256 public totalGuildBankTokens = 0; // total tokens with non-zero balance in guild bank 公会银行token中数量
+    uint256 public totalGuildBankTokens = 0; // total tokens with non-zero balance in guild bank 公会银行token类型数量
 
     address public constant GUILD = address(0xdead); //公会
     address public constant ESCROW = address(0xbeef); //第三方托管, 托管提议奖励的token
@@ -236,8 +236,8 @@ contract Moloch is ReentrancyGuard {
         uint256 _periodDuration, //投票发起间隔
         uint256 _votingPeriodLength,//投票持续时间
         uint256 _gracePeriodLength,// 缓冲期（Grace Period），在此期间，对投票结果不满意的股东可以怒退
-        uint256 _proposalDeposit, //提议押金
-        uint256 _dilutionBound, //提案share与loot份额占公会总share与loot份额的比率
+        uint256 _proposalDeposit, //提案押金
+        uint256 _dilutionBound, //提案share与loot份额占公会总share与loot份额的比率, 超过比率，则无效
         uint256 _processingReward, //处理提案奖励
         uint256[] calldata _summonerShares // 初始成员份额
     ) external {
@@ -362,8 +362,8 @@ contract Moloch is ReentrancyGuard {
         address applicant, //提议发起者
         uint256 sharesRequested,//请求股份份额
         uint256 lootRequested, //请求Loot份额
-        uint256 tributeOffered, //奖励token的数量
-        address tributeToken, // 奖励token地址
+        uint256 tributeOffered, //贡献token的数量
+        address tributeToken, // 贡献token地址
         uint256 paymentRequested,//支付token数量
         address paymentToken, // 支付token地址
         string memory details, //提议详情
@@ -593,6 +593,7 @@ contract Moloch is ReentrancyGuard {
         // PROPOSAL FAILED
         } else {
             // return all tokens to the proposer (not the applicant, because funds come from proposer)
+            // 返回所有的token给提议者（不是应用者，应为基金来源于提议者）
             unsafeInternalTransfer(ESCROW, proposal.proposer, proposal.tributeToken, proposal.tributeOffered);
         }
         //退回赞助质押token，并发放处理提案奖励
@@ -780,11 +781,11 @@ contract Moloch is ReentrancyGuard {
         //只退回loot占的份额，share份额废除
         _ragequit(memberToKick, 0, member.loot);
     }
-
+    //退还token
     function withdrawBalance(address token, uint256 amount) public nonReentrant {
         _withdrawBalance(token, amount);
     }
-
+    //批量退款token，支持余额最大模式
     function withdrawBalances(address[] memory tokens, uint256[] memory amounts, bool max) public nonReentrant {
         require(tokens.length == amounts.length, "tokens and amounts arrays must be matching lengths");
 
@@ -797,17 +798,19 @@ contract Moloch is ReentrancyGuard {
             _withdrawBalance(tokens[i], withdrawAmount);
         }
     }
-    
+    //退款
     function _withdrawBalance(address token, uint256 amount) internal {
         require(userTokenBalances[msg.sender][token] >= amount, "insufficient balance");
         unsafeSubtractFromBalance(msg.sender, token, amount);
+        //退款给用户
         require(IERC20(token).transfer(msg.sender, amount), "transfer failed");
         emit Withdraw(msg.sender, token, amount);
     }
-
+    //矫正公会token余额
     function collectTokens(address token) public onlyDelegate nonReentrant {
         uint256 amountToCollect = IERC20(token).balanceOf(address(this)).sub(userTokenBalances[TOTAL][token]);
         // only collect if 1) there are tokens to collect 2) token is whitelisted 3) token has non-zero balance
+        // 需要token为白名单，公会token余额大于0，公会总
         require(amountToCollect > 0, 'no tokens to collect');
         require(tokenWhitelist[token], 'token to collect must be whitelisted');
         require(userTokenBalances[GUILD][token] > 0 || totalGuildBankTokens < MAX_TOKEN_GUILDBANK_COUNT, 'token to collect must have non-zero guild bank balance');
@@ -821,6 +824,7 @@ contract Moloch is ReentrancyGuard {
     }
 
     // NOTE: requires that delegate key which sent the original proposal cancels, msg.sender == proposal.proposer
+    //取消提案
     function cancelProposal(uint256 proposalId) public nonReentrant {
         Proposal storage proposal = proposals[proposalId];
         require(!proposal.flags[0], "proposal has already been sponsored");
@@ -828,11 +832,11 @@ contract Moloch is ReentrancyGuard {
         require(msg.sender == proposal.proposer, "solely the proposer can cancel");
 
         proposal.flags[3] = true; // cancelled
-        
+        //将提案者贡献的token，从托管池，退还给用户
         unsafeInternalTransfer(ESCROW, proposal.proposer, proposal.tributeToken, proposal.tributeOffered);
         emit CancelProposal(proposalId, msg.sender);
     }
-
+    //更新代理key
     function updateDelegateKey(address newDelegateKey) public nonReentrant onlyShareholder {
         require(newDelegateKey != address(0), "newDelegateKey cannot be 0");
 
@@ -851,6 +855,7 @@ contract Moloch is ReentrancyGuard {
     }
 
     // can only ragequit if the latest proposal you voted YES on has been processed
+    // 判断最大投yes的提案，是否被处理，只有被处理，用户才可以怒退
     function canRagequit(uint256 highestIndexYesVote) public view returns (bool) {
         require(highestIndexYesVote < proposalQueue.length, "proposal does not exist");
         return proposals[proposalQueue[highestIndexYesVote]].flags[1];

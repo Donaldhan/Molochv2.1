@@ -5,8 +5,9 @@ import "./Molochv2.1.sol";
 import "./CloneFactory.sol";
 
 contract MolochSummoner is CloneFactory { 
-    
+    //Moloch 模板
     address public template;
+    //DAO
     mapping (address => bool) public daos;
     uint daoIdx = 0;
     Moloch private moloch; // moloch contract
@@ -21,18 +22,19 @@ contract MolochSummoner is CloneFactory {
     * 基于eip-1167创建一个Moloch
     */
     function summonMoloch(
-        address[] memory _summoner,
-        address[] memory _approvedTokens,
-        uint256 _periodDuration,
-        uint256 _votingPeriodLength,
-        uint256 _gracePeriodLength,
-        uint256 _proposalDeposit,
-        uint256 _dilutionBound,
-        uint256 _processingReward,
-        uint256[] memory _summonerShares
+        address[] memory _summoner,//初始化成员
+        address[] memory _approvedTokens,//允许的token
+        uint256 _periodDuration,//每个提案发起的间隔
+        uint256 _votingPeriodLength,//投票持续时间
+        uint256 _gracePeriodLength,// 缓冲期（Grace Period），在此期间，对投票结果不满意的股东可以怒退
+        uint256 _proposalDeposit, //提案押金， 赞助者赞成需要质押的金额
+        uint256 _dilutionBound, //提案share与loot份额占公会总share与loot份额的比率, 超过比率，则无效
+        uint256 _processingReward, //处理提案奖励
+        uint256[] memory _summonerShares // 初始成员份额
     ) public returns (address) {
+        //创建Moloch
         Moloch baal = Moloch(createClone(template));
-        
+        // 初始化Moloch
         baal.init(
             _summoner,
             _approvedTokens,
@@ -49,7 +51,9 @@ contract MolochSummoner is CloneFactory {
         
         return address(baal);
     }
-    
+    /*
+     * 注册dao
+     */
     function registerDao(
         address _daoAdress,
         string memory _daoTitle,
@@ -59,7 +63,7 @@ contract MolochSummoner is CloneFactory {
           
       moloch = Moloch(_daoAdress);
       (,,,bool exists,,) = moloch.members(msg.sender);
-    
+      //必须为DAO成员， DAO没有注册
       require(exists == true, "must be a member");
       require(daos[_daoAdress] == false, "dao metadata already registered");
 
