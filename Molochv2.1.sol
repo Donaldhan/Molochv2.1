@@ -47,6 +47,7 @@ contract Moloch is ReentrancyGuard {
     uint256 public proposalDeposit;
     // default = 3 - maximum multiplier a YES voter will be obligated to pay in case of mass ragequit
     // 防止大量的怒退情况下，有义务向投票yes的投票者支付（3 - maximum multiplier）
+    // 投票share和loot份额，占公会总投票share和loot份额的比率，大于者个比率，则提案投票结果无效
     uint256 public dilutionBound;
     // default = 0.1 - amount of ETH to give to whoever processes a proposal
     // 奖励给任何处理提案的ETH（0.1 - amount of ETH）
@@ -151,10 +152,10 @@ contract Moloch is ReentrancyGuard {
         // 希望成为成员的应用， 此key可以用户退款（踢出提议的目标）
         address applicant;
         // the account that submitted the proposal (can be non-member)
-        // 提交提议的账户
+        // 提交提案的账户
         address proposer;
         // the member that sponsored the proposal (moving it into the queue)
-        // 赞助提议的成员
+        // 赞助提案的成员
         address sponsor;
         // the # of shares the applicant is requesting
         // 应用请求的投票份额
@@ -166,13 +167,13 @@ contract Moloch is ReentrancyGuard {
         // 奖励的token数量
         uint256 tributeOffered;
         // tribute token contract reference
-        // 奖励token地址
+        // 感谢token地址， 提案发起者贡献给公会的
         address tributeToken;
         // amount of tokens requested as payment
-        // 请求需要支付的token数量
+        // 提案通过，请求公会需要支付的token数量
         uint256 paymentRequested;
         // payment token contract reference
-        // 支付的token地址
+        // 提案通过，请求公会需要支付的token地址
         address paymentToken;
         // the period in which voting can start for this proposal
         // 开始投票的时间
@@ -185,7 +186,7 @@ contract Moloch is ReentrancyGuard {
         uint256 noVotes;
         // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
         // 提案各节点状态标志
-        // [sponsored(提案是否已赞助), processed（）, didPass（）, cancelled（提案是否取消）, whitelist（token白名单提案）, guildkick（是否为公会踢出成员提案）]
+        // [sponsored(提案是否已赞助), processed（提案是否处理）, didPass（提案是否通过）, cancelled（提案是否取消）, whitelist（token白名单提案）, guildkick（是否为公会踢出成员提案）]
         bool[6] flags;
         // proposal details - could be IPFS hash, plaintext, or JSON
         //提议详情
@@ -227,7 +228,7 @@ contract Moloch is ReentrancyGuard {
         _;
     }
     /**
-    *
+    * 初始化公会提案机制
     */
     function init(
         address[] calldata _summoner, //初始成员
@@ -236,8 +237,8 @@ contract Moloch is ReentrancyGuard {
         uint256 _votingPeriodLength,//投票持续时间
         uint256 _gracePeriodLength,// 缓冲期（Grace Period），在此期间，对投票结果不满意的股东可以怒退
         uint256 _proposalDeposit, //提议押金
-        uint256 _dilutionBound,
-        uint256 _processingReward, //提议奖励
+        uint256 _dilutionBound, //提案share与loot份额占公会总share与loot份额的比率
+        uint256 _processingReward, //处理提案奖励
         uint256[] calldata _summonerShares // 初始成员份额
     ) external {
         require(!initialized, "initialized"); //需要未初始化
@@ -316,7 +317,7 @@ contract Moloch is ReentrancyGuard {
         // collect tribute from proposer and store it in the Moloch until the proposal is processed
         //从建立token地址tributeToken转移奖励tributeOffered个token到当前合约
         require(IERC20(tributeToken).transferFrom(msg.sender, address(this), tributeOffered), "tribute token transfer failed");
-        //更新托管的token数量及总token池数量
+        //更新托管的奖励token数量及总token池数量
         unsafeAddToBalance(ESCROW, tributeToken, tributeOffered);
 
         bool[6] memory flags; // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
@@ -395,7 +396,7 @@ contract Moloch is ReentrancyGuard {
         proposalCount += 1;
     }
     /**
-    * 赞助提案
+    * 赞助提案， 只有被赞助的提案，才能投票
     */
     function sponsorProposal(uint256 proposalId) public nonReentrant onlyDelegate {
         // collect proposal deposit from sponsor and store it in the Moloch until the proposal is processed
@@ -432,7 +433,7 @@ contract Moloch is ReentrancyGuard {
         } else if (proposal.flags[5]) {
             //确保之前没有被踢出
             require(!proposedToKick[proposal.applicant], 'already proposed to kick');
-            //已赞助的token地址白名单
+            //添加踢出者到已提议踢出的成员列表
             proposedToKick[proposal.applicant] = true;
         }
 
@@ -508,40 +509,46 @@ contract Moloch is ReentrancyGuard {
         emit SubmitVote(proposalQueue[proposalIndex], proposalIndex, msg.sender, memberAddress, uintVote);
     }
     /**
-     * TODO
+     * 处理提案
      */
     function processProposal(uint256 proposalIndex) public nonReentrant {
+        //校验提案索引的有效性
         _validateProposalForProcessing(proposalIndex);
 
         uint256 proposalId = proposalQueue[proposalIndex];
         Proposal storage proposal = proposals[proposalId];
-
+        //必须为标准提案，非白名单及踢出成员提案
         require(!proposal.flags[4] && !proposal.flags[5], "must be a standard proposal");
-
+        //更新处理标志
         proposal.flags[1] = true; // processed
-
+        //判断提案是否通过
         bool didPass = _didPass(proposalIndex);
 
         // Make the proposal fail if the new total number of shares and loot exceeds the limit
+        // 总份额检查，超限，则提案失败
         if (totalShares.add(totalLoot).add(proposal.sharesRequested).add(proposal.lootRequested) > MAX_NUMBER_OF_SHARES_AND_LOOT) {
             didPass = false;
         }
 
         // Make the proposal fail if it is requesting more tokens as payment than the available guild bank balance
+        // 确保公会的付款token的余额足够,不足，则提案失败
         if (proposal.paymentRequested > userTokenBalances[GUILD][proposal.paymentToken]) {
             didPass = false;
         }
 
         // Make the proposal fail if it would result in too many tokens with non-zero balance in guild bank
+        //如果新增加的奖励token，确保总工会token不会超限
         if (proposal.tributeOffered > 0 && userTokenBalances[GUILD][proposal.tributeToken] == 0 && totalGuildBankTokens >= MAX_TOKEN_GUILDBANK_COUNT) {
            didPass = false;
         }
 
         // PROPOSAL PASSED
         if (didPass) {
+            //提案通过
             proposal.flags[2] = true; // didPass
 
             // if the applicant is already a member, add to their existing shares & loot
+            // 增加提案applicant的share和loot份额
             if (members[proposal.applicant].exists) {
                 members[proposal.applicant].shares = members[proposal.applicant].shares.add(proposal.sharesRequested);
                 members[proposal.applicant].loot = members[proposal.applicant].loot.add(proposal.lootRequested);
@@ -549,6 +556,7 @@ contract Moloch is ReentrancyGuard {
             // the applicant is a new member, create a new record for them
             } else {
                 // if the applicant address is already taken by a member's delegateKey, reset it to their member address
+                // 如果提案applicant的代理key存在，则增加提案applicant代理key的share和loot份额
                 if (members[memberAddressByDelegateKey[proposal.applicant]].exists) {
                     address memberToOverride = memberAddressByDelegateKey[proposal.applicant];
                     memberAddressByDelegateKey[memberToOverride] = memberToOverride;
@@ -556,23 +564,28 @@ contract Moloch is ReentrancyGuard {
                 }
 
                 // use applicant address as delegateKey by default
+                // 更新成员及dialing信息
                 members[proposal.applicant] = Member(proposal.applicant, proposal.sharesRequested, proposal.lootRequested, true, 0, 0);
                 memberAddressByDelegateKey[proposal.applicant] = proposal.applicant;
             }
 
             // mint new shares & loot
+            // 挖取新的share和loot份额
             totalShares = totalShares.add(proposal.sharesRequested);
             totalLoot = totalLoot.add(proposal.lootRequested);
 
             // if the proposal tribute is the first tokens of its kind to make it into the guild bank, increment total guild bank tokens
+            // 增加公会token数量
             if (userTokenBalances[GUILD][proposal.tributeToken] == 0 && proposal.tributeOffered > 0) {
                 totalGuildBankTokens += 1;
             }
-
+            //从托管池划转感谢token给公会
             unsafeInternalTransfer(ESCROW, GUILD, proposal.tributeToken, proposal.tributeOffered);
+            //从公会总划转付款token给提案者
             unsafeInternalTransfer(GUILD, proposal.applicant, proposal.paymentToken, proposal.paymentRequested);
 
             // if the proposal spends 100% of guild bank balance for a token, decrement total guild bank tokens
+            // 如果公会付款token余额为0，则减少公会token数量
             if (userTokenBalances[GUILD][proposal.paymentToken] == 0 && proposal.paymentRequested > 0) {
                 totalGuildBankTokens -= 1;
             }
@@ -582,83 +595,93 @@ contract Moloch is ReentrancyGuard {
             // return all tokens to the proposer (not the applicant, because funds come from proposer)
             unsafeInternalTransfer(ESCROW, proposal.proposer, proposal.tributeToken, proposal.tributeOffered);
         }
-
+        //退回赞助质押token，并发放处理提案奖励
         _returnDeposit(proposal.sponsor);
-
+        //发起处理提案事件
         emit ProcessProposal(proposalIndex, proposalId, didPass);
     }
     /**
+    * 处理白名单提案
     */
     function processWhitelistProposal(uint256 proposalIndex) public nonReentrant {
         _validateProposalForProcessing(proposalIndex);
 
         uint256 proposalId = proposalQueue[proposalIndex];
         Proposal storage proposal = proposals[proposalId];
-
+        //必须为白名单提案
         require(proposal.flags[4], "must be a whitelist proposal");
-
+        //更新处理标志
         proposal.flags[1] = true; // processed
-
+        //判断提案是否通过
         bool didPass = _didPass(proposalIndex);
-
+        //确保token数量没有超限
         if (approvedTokens.length >= MAX_TOKEN_WHITELIST_COUNT) {
             didPass = false;
         }
-
+        //提案通过，添加token到白名单，及允许token名单
         if (didPass) {
+
             proposal.flags[2] = true; // didPass
 
             tokenWhitelist[address(proposal.tributeToken)] = true;
             approvedTokens.push(proposal.tributeToken);
         }
-
+        //添加贡献tributeToken, 已提议为白名单token
         proposedToWhitelist[address(proposal.tributeToken)] = false;
-
+        //退回赞助质押token，并发放处理提案奖励
         _returnDeposit(proposal.sponsor);
 
         emit ProcessWhitelistProposal(proposalIndex, proposalId, didPass);
     }
     /**
-    *
+    * 处理踢出会员提案
     */
     function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
+        //校验提案索引的有效性
         _validateProposalForProcessing(proposalIndex);
 
         uint256 proposalId = proposalQueue[proposalIndex];
         Proposal storage proposal = proposals[proposalId];
-
+        //必须为踢出会员提案
         require(proposal.flags[5], "must be a guild kick proposal");
 
         proposal.flags[1] = true; // processed
-
+        //判断提案是否通过
         bool didPass = _didPass(proposalIndex);
-
+        //提案通过，添加token到白名单，及允许token名单
         if (didPass) {
             proposal.flags[2] = true; // didPass
             Member storage member = members[proposal.applicant];
+            //更新成员被踢出索引
             member.jailed = proposalIndex;
 
             // transfer shares to loot
+            // 退出的话，share投票份额，转换成loot
             member.loot = member.loot.add(member.shares);
+            //减少总份额
             totalShares = totalShares.sub(member.shares);
+            //增加中loot
             totalLoot = totalLoot.add(member.shares);
+            //剥削成员的投票份额
             member.shares = 0; // revoke all shares
         }
-
+        //更新
         proposedToKick[proposal.applicant] = false;
-
+        //退回赞助质押token，并发放处理提案奖励
         _returnDeposit(proposal.sponsor);
 
         emit ProcessGuildKickProposal(proposalIndex, proposalId, didPass);
     }
     /**
+    * 判断提案是否通过
     */
     function _didPass(uint256 proposalIndex) internal returns (bool didPass) {
         Proposal memory proposal = proposals[proposalQueue[proposalIndex]];
-
+        //yes大于no的票数， 则提案失败
         didPass = proposal.yesVotes > proposal.noVotes;
 
         // Make the proposal fail if the dilutionBound is exceeded
+        //如果提议的投票share和loot份额；大于公会的总share和loot份额的稀释率dilutionBound，则提案失败
         if ((totalShares.add(totalLoot)).mul(dilutionBound) < proposal.maxTotalSharesAndLootAtYesVote) {
             didPass = false;
         }
@@ -666,6 +689,7 @@ contract Moloch is ReentrancyGuard {
         // Make the proposal fail if the applicant is jailed
         // - for standard proposals, we don't want the applicant to get any shares/loot/payment
         // - for guild kick proposals, we should never be able to propose to kick a jailed member (or have two kick proposals active), so it doesn't matter
+        //提案者被踢出，则失败
         if (members[proposal.applicant].jailed != 0) {
             didPass = false;
         }
@@ -673,24 +697,29 @@ contract Moloch is ReentrancyGuard {
         return didPass;
     }
     /**
-    *
+    * 校验提案索引的有效性
     */
     function _validateProposalForProcessing(uint256 proposalIndex) internal view {
         require(proposalIndex < proposalQueue.length, "proposal does not exist");
         Proposal memory proposal = proposals[proposalQueue[proposalIndex]];
-
+        //提案投票开始时间+投票间隔+缓冲时间
         require(getCurrentPeriod() >= proposal.startingPeriod.add(votingPeriodLength).add(gracePeriodLength), "proposal is not ready to be processed");
+        //没有被处理
         require(proposal.flags[1] == false, "proposal has already been processed");
+        //确保之前的提案已经被处理
         require(proposalIndex == 0 || proposals[proposalQueue[proposalIndex.sub(1)]].flags[1], "previous proposal must be processed");
     }
     /**
-    *
+    * 退回赞助质押token，并发放处理提案奖励
     */
     function _returnDeposit(address sponsor) internal {
+        //从托管池，给发送者处理奖励
         unsafeInternalTransfer(ESCROW, msg.sender, depositToken, processingReward);
+        //退回质押token给赞助者
         unsafeInternalTransfer(ESCROW, sponsor, depositToken, proposalDeposit.sub(processingReward));
     }
     /**
+    * 怒退
     * @param sharesToBurn 销毁的投票份额
     * @param lootToBurn 销毁的Loot份额
     */
@@ -698,8 +727,10 @@ contract Moloch is ReentrancyGuard {
         _ragequit(msg.sender, sharesToBurn, lootToBurn);
     }
     /**
+    *
     */
     function _ragequit(address memberAddress, uint256 sharesToBurn, uint256 lootToBurn) internal {
+        //当前中share和loot份额
         uint256 initialTotalSharesAndLoot = totalShares.add(totalLoot);
         //获取成员信息
         Member storage member = members[memberAddress];
@@ -708,7 +739,7 @@ contract Moloch is ReentrancyGuard {
         require(member.loot >= lootToBurn, "insufficient loot");
         //必须成员最高投yes的索引提议，已经执行
         require(canRagequit(member.highestIndexYesVote), "cannot ragequit until highest index proposal member voted YES on is processed");
-
+        //需要销毁的share和loot
         uint256 sharesAndLootToBurn = sharesToBurn.add(lootToBurn);
 
         // burn shares and loot
@@ -719,27 +750,34 @@ contract Moloch is ReentrancyGuard {
         totalShares = totalShares.sub(sharesToBurn);
         // 更新总Loot份额
         totalLoot = totalLoot.sub(lootToBurn);
-        //todo ???
+        //更新怒退用户的允许token的份额
         for (uint256 i = 0; i < approvedTokens.length; i++) {
+            //计算share占用的允许token的总份额
             uint256 amountToRagequit = fairShare(userTokenBalances[GUILD][approvedTokens[i]], sharesAndLootToBurn, initialTotalSharesAndLoot);
-            if (amountToRagequit > 0) { // gas optimization to allow a higher maximum token limit
+            if (amountToRagequit > 0) {
+                // gas optimization to allow a higher maximum token limit
                 // deliberately not using safemath here to keep overflows from preventing the function execution (which would break ragekicks)
                 // if a token overflows, it is because the supply was artificially inflated to oblivion, so we probably don't care about it anyways
+                // 从公会划转怒退token
                 userTokenBalances[GUILD][approvedTokens[i]] -= amountToRagequit;
+                //增加用户token余额
                 userTokenBalances[memberAddress][approvedTokens[i]] += amountToRagequit;
             }
         }
 
         emit Ragequit(memberAddress, sharesToBurn, lootToBurn);
     }
-
+    /**
+    * 暴怒踢出成员
+    */
     function ragekick(address memberToKick) public nonReentrant {
         Member storage member = members[memberToKick];
-
+        //确保成员没有被踢出，同时loot大于零
         require(member.jailed != 0, "member must be in jail");
         require(member.loot > 0, "member must have some loot"); // note - should be impossible for jailed member to have shares
+        //确保怒踢前，已投票的提案被处理
         require(canRagequit(member.highestIndexYesVote), "cannot ragequit until highest index proposal member voted YES on is processed");
-
+        //只退回loot占的份额，share份额废除
         _ragequit(memberToKick, 0, member.loot);
     }
 
@@ -864,28 +902,35 @@ contract Moloch is ReentrancyGuard {
         //更新总token池数量
         userTokenBalances[TOTAL][token] += amount;
     }
-
+    //减少账户token的余额
     function unsafeSubtractFromBalance(address user, address token, uint256 amount) internal {
+        //减少用户token余额
         userTokenBalances[user][token] -= amount;
+        //更新总池的token余额
         userTokenBalances[TOTAL][token] -= amount;
     }
-
+    //从from，转账给定数量的token给to账号
     function unsafeInternalTransfer(address from, address to, address token, uint256 amount) internal {
+        //减少from账号的余额
         unsafeSubtractFromBalance(from, token, amount);
+        //增加token账号的金额
         unsafeAddToBalance(to, token, amount);
     }
-
+    /**
+     * 计算share份额对应的数量
+     */
     function fairShare(uint256 balance, uint256 shares, uint256 totalShares) internal pure returns (uint256) {
+        //确保总份额不为0
         require(totalShares != 0);
-
+        //
         if (balance == 0) { return 0; }
-
+        //
         uint256 prod = balance * shares;
-
+        //无溢出情况
         if (prod / balance == shares) { // no overflow in multiplication above?
             return prod / totalShares;
         }
-
+        //计算份额占比
         return (balance / totalShares) * shares;
     }
 }
