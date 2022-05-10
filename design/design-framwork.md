@@ -1,3 +1,9 @@
+# 引言
+
+# 合约架构
+
+![molochv2-contract-framework](/image/molochv2/molochv2-contract-framework.png)
+
 CloneFactory：基于EIP-1167合约clone工厂
 Moloch：提案管理，包括创建，投票，处理，怒退，怒踢等流程；
 MolochSummoner：创建DAO，注册DAO
@@ -51,25 +57,63 @@ DAO合约Moloch
 
 
 
-资金流转：
+资金流转模型
+
+![molochv2-guild-bank-cash-model](/image/molochv2/molochv2-guild-bank-cash-model.png)
 
 
-质押托管
-贡献-托管；
-投票成功-》贡献从托管到公会；公会从公会银行支付给token给提案者；返回质押
+* 发起提案
+1. 提案用户转账贡献tributeToken到DAO合约地址；
+2. 划账贡献token到公会托管池ESCROW，同时添加公会总池TOTAL；
 
-奖励：从质押到公会账户
+* 赞助提案
+1. 赞助用户转账质押depositToken到DAO合约地址；
+2. 划账质押depositToken到公会托管池ESCROW，同时添加公会总池； 
 
-取消提案：
+* 处理提案
+
+提案通过的情况
+
+1. 从托管池ESCROW，将贡献tributeToken，划转到公会池GUILD；
+2. 从公会池GUILD，划转支付paymentToken，给公会用户；
+3. 从托管池ESCROW，划转奖励的质押token，给公会处理提案账号；
+4. 从托管池ESCROW，将剩余的质押token，退回到公会赞助者账号；
+
+提案不通过的情况
+
+1. 从托管池ESCROW，退回贡献tributeToken，到公会提案用户账户；
+2. 从托管池ESCROW，划转奖励的质押token，给公会处理提案账号；
+3. 从托管池ESCROW，将剩余的质押token，退回到公会赞助者账号；
 
 
-怒退： 取回公会银行所有token份额；
+* 取消提案
+1. 从托管池ESCROW，将贡献tributeToken，划转到公会提案用户账户；
 
 
-退款：从公会个人账户取出token；
+* 怒退
+怒退的公会成员，可以取回给定share和loot份额的公会资产token(所有提案者贡献给公会的token)；
+
+token份额计算公式为：
+（sharesToBurn+lootToBurn）/（totalShares+totalLoot）* token(GUILD)
+
+1. 从公会池GUILD，划转到用户的公会账户；
+
+
+* 怒踢
+怒踢和怒退的区别是，share份额被废除；
+
+token份额计算公式为：
+（成员loot）/（totalShares+totalLoot）* token(GUILD)
+
+1. 从公会池GUILD，划转到用户的公会账户；
 
 
 
+* 退款
+1. DAO合约发起Token转账给用户账户；
+
+
+# 总结
 
 成员的管理
 
